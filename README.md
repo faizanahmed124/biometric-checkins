@@ -1,18 +1,27 @@
-# Biometric Checkins (ERP se alag)
+# Biometric Checkins
 
-Ye app 12 ZKTeco machines se **LAN par direct** (IP:4370) logs uthati hai, apne local SQLite database mein save karti hai, aur React screen par dikhati hai. ERP band ho, ya ERP ka 24-ghante wala filter ho, is app par koi asar nahi parta.
+Fetches attendance logs **directly** from the ZKTeco biometric machines over the LAN (IP + port), stores them in a local SQLite database, and shows them in a React UI. It works independently of ERP, so ERP downtime or ERP's 24-hour import filter does not affect it. Optionally, it reads ERP (read-only) to show shifts and compare machine punches with ERP checkins.
 
-Browser khud machine ke TCP port 4370 se baat nahi kar sakta. Is liye ek chhota Python backend (pyzk) machines se connect karta hai, aur React us backend se data leta hai.
+A browser cannot talk to a machine's TCP port directly, so a small Python backend (FastAPI + pyzk) connects to the machines and the React app talks to that backend.
 
 ```
-React (browser) ──HTTP──▶ backend (FastAPI + pyzk) ──TCP 4370──▶ 12 machines
-                                   │
-                              checkins.db (SQLite)
+React (browser) ──HTTP──▶ backend (FastAPI + pyzk) ──TCP──▶ biometric machines
+                                │        └──REST (read-only)──▶ ERPNext / HRMS
+                           checkins.db (SQLite)
 ```
 
-## 1. Machines ki list (`backend/devices.json`)
+## 1. Machine list (`backend/devices.json`)
 
-Is file mein abhi sample IPs hain. Apni asli list ERP se nikalne ke liye ERP server par ye chalayein:
+One entry per machine:
+
+```json
+{"name": "20.1.10.245", "ip": "20.1.10.245", "port": 4370, "log_type": "IN", "location": "Main Gate", "password": 0, "active": true}
+```
+
+- `name` should match the Biometric Device name in ERP (used for the machine-wise comparison).
+- Optional: `password` (comm key, default 0), `force_udp` (`true` for older machines), `active`.
+
+To export the list from ERP, run on the ERP server:
 
 ```bash
 cd ~/frappe-bench
@@ -24,13 +33,36 @@ devs = frappe.get_all("Biometric Device", filters={"is_active": 1}, fields=["nam
 out = [{"name": d.name, "ip": d.device_ip, "port": int(d.port or 4370), "log_type": d.log_type or "IN", "password": 0, "active": True} for d in devs if d.device_ip and d.device_ip != "None"]
 print(json.dumps(out, indent=2))
 ```
-Output copy karke `backend/devices.json` mein paste kar dein.
 
-Har machine ke optional fields: `password` (comm key, default 0), `force_udp` (purani machines ke liye `true`), `active`.
+## 2. ERP link (shifts + comparison)
 
-## 2. Install
+The app only **reads** from ERP. It never writes there.
 
-Server/PC par Python 3.9+ aur Node 18+ chahiye, aur wo machines wale network (10.1.1.x) mein hona chahiye.
+1. Use an ERP user with **read** permission on Employee Checkin, Employee, Shift Assignment and Shift Type.
+2. Open that user → **Settings → API Access → Generate Keys**. Copy the API Key and API Secret (the secret is shown only once).
+3. Copy `backend/erp.example.json` to `backend/erp.json` and fill it in:
+   ```json
+   {
+     "url": "http://10.1.1.98:8000",
+     "site": "atshr.com",
+     "api_key": "...",
+     "api_secret": "...",
+     "verify_ssl": true
+   }
+   ```
+   `site` is needed because ERP is reached by IP, so Frappe must be told which site to serve.
+4. Restart the backend. `curl -s localhost:8800/api/erp/status` should return `"ok": true`.
+
+How the comparison works:
+- A machine user ID is matched to an ERP Employee by `attendance_device_id` first, otherwise by Employee ID.
+- Punches are matched per employee by **exact time**. "Missing in ERP" = on a machine but not in ERP. "Only in ERP" = in ERP but not in this app's machine data.
+- Shift source, in order: the shift on the ERP checkin → active Shift Assignment → the employee's Default Shift → guessed from the punch time.
+- The machine-wise difference uses the ERP checkin's `device_id`. Older checkins without a `device_id` are grouped under "(no device_id)".
+- Fetch the day from the machines first, then open the comparison.
+
+## 3. Install
+
+Needs Python 3.9+ and Node 18+, on a computer that can reach both the machines and ERP.
 
 ```bash
 # backend
@@ -39,13 +71,13 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# frontend (ek dafa build)
+# frontend (build once, and again after every update)
 cd ../frontend
 npm install
 npm run build
 ```
 
-## 3. Chalayein
+## 4. Run
 
 ```bash
 cd biometric-checkins/backend
@@ -53,17 +85,18 @@ source venv/bin/activate
 uvicorn app:app --host 0.0.0.0 --port 8800
 ```
 
-Browser mein kholein: `http://<server-ip>:8800`
+Open `http://<computer-ip>:8800` in a browser.
 
 Settings (environment variables):
 
-| Variable | Default | Matlab |
+| Variable | Default | Meaning |
 |---|---|---|
-| `AUTO_SYNC_MINUTES` | 30 | Har itne minute baad kal + aaj ke logs khud fetch. `0` = band |
-| `DEVICE_TIMEOUT` | 10 | Machine connect timeout (seconds) |
+| `AUTO_SYNC_MINUTES` | 30 | Every N minutes, fetch yesterday + today automatically. `0` = off |
+| `DEVICE_TIMEOUT` | 10 | Machine connection timeout (seconds) |
 | `DB_FILE` | `backend/checkins.db` | Local database |
+| `ERP_CONFIG` | `backend/erp.json` | ERP connection file |
 
-## 4. Hamesha chalta rahe (systemd)
+## 5. Keep it running (systemd)
 
 `/etc/systemd/system/biometric-checkins.service`:
 ```ini
@@ -72,10 +105,10 @@ Description=Biometric Checkins
 After=network-online.target
 
 [Service]
-User=ats-hr
-WorkingDirectory=/home/ats-hr/biometric-checkins/backend
+User=faizan
+WorkingDirectory=/home/faizan/Downloads/biometric-checkins/backend
 Environment=AUTO_SYNC_MINUTES=30
-ExecStart=/home/ats-hr/biometric-checkins/backend/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8800
+ExecStart=/home/faizan/Downloads/biometric-checkins/backend/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8800
 Restart=always
 
 [Install]
@@ -86,17 +119,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now biometric-checkins
 ```
 
-## Istemal
+## Using the app
 
-- **Date chunein → "Machines se fetch karo"**: 12 machines se ek saath (parallel) us din ke logs aate hain. Purani date bhi chalegi, jab tak machine ki memory mein logs mojood hain.
-- **Employee summary**: har employee ka pehla/aakhri punch, ghante, kitne punch, kis machine par. Sirf 1 punch wale "missing" dikhte hain.
-- **Saare punches**: har punch alag line mein.
-- **Machines**: connection check, machine ka waqt (agar machine ka clock galat ho to yahin pata chalega), record count, aur aakhri fetch ka result ya error.
-- **CSV**: summary ya saare punches download.
+- **Pick a date → "Fetch from machines"**: pulls that day's logs from all machines in parallel. Past dates work as long as the logs are still in the machine's memory.
+- **Employee summary**: first/last punch, hours, punch count and machines per employee. With ERP linked, it also shows the shift, ERP name and department, and the ERP checkin count (a red `(−n)` means n punches are missing in ERP). Filter by shift.
+- **All punches**: every punch on its own row.
+- **ERP comparison**: totals, shift-wise and machine-wise tables, and an employee list showing exactly which punch times are missing in ERP or only in ERP.
+- **Machines**: connection check, machine clock (spots machines with a wrong clock), record count, and the result or error of the last fetch.
+- **CSV**: download the summary or all punches.
 
-Duplicate punches save nahi hote (machine + employee + waqt unique hai), is liye fetch jitni dafa marzi dabayein.
+Duplicate punches are never stored (machine + employee + time is unique), so you can fetch as often as you like.
 
-## Dhyan rahe
+## Notes
 
-- ZKTeco machine ek waqt mein aam tor par ek hi connection leti hai. ERP ka 5-minute cron bhi isi waqt connect kare to us machine par "busy/timeout" aa sakta hai. App ek retry khud karti hai. Phir bhi fail ho to thori dair baad dobara fetch karein.
-- Backend development ke liye: `npm run dev` (frontend, port 5173) + uvicorn port 8800. Vite `/api` ko khud 8800 par bhej deta hai.
+- A ZKTeco machine usually accepts one connection at a time. If ERP's 5-minute cron connects at the same moment, that machine may report busy/timeout. The app retries once; if it still fails, fetch again a little later.
+- Development: run `npm run dev` (frontend on port 5173) alongside uvicorn on port 8800. Vite proxies `/api` to 8800.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Compare from './Compare.jsx'
 
 const today = () => new Date().toLocaleDateString('en-CA') // YYYY-MM-DD
@@ -35,15 +35,18 @@ export default function App() {
   const [erpInfo, setErpInfo] = useState(null)
   const [shiftFilter, setShiftFilter] = useState('')
 
+  const reqId = useRef(0)
   const load = useCallback(async () => {
+    const id = ++reqId.current // ignore responses for a date the user has already left
     setError('')
     try {
       const q = `date=${day}${device ? `&device=${encodeURIComponent(device)}` : ''}`
       const [s, p] = await Promise.all([api(`/api/summary_erp?${q}`), api(`/api/checkins?${q}`)])
+      if (id !== reqId.current) return
       setSummary(s.rows)
       setErpInfo({ erp: s.erp, error: s.erp_error })
       setPunches(p)
-    } catch (e) { setError(e.message) }
+    } catch (e) { if (id === reqId.current) setError(e.message) }
   }, [day, device])
 
   useEffect(() => { load() }, [load])
@@ -69,8 +72,8 @@ export default function App() {
 
   const term = search.trim().toLowerCase()
   const match = (r) => !term || [r.user_id, r.name, r.erp_name, r.employee].some((v) => (v || '').toLowerCase().includes(term))
-  const fSummary = useMemo(() => summary.filter((r) => match(r) && (!shiftFilter || (r.shift || '(koi shift nahi)') === shiftFilter)), [summary, term, shiftFilter]) // eslint-disable-line
-  const shiftNames = useMemo(() => [...new Set(summary.map((r) => r.shift || '(koi shift nahi)'))].sort(), [summary])
+  const fSummary = useMemo(() => summary.filter((r) => match(r) && (!shiftFilter || (r.shift || '(no shift)') === shiftFilter)), [summary, term, shiftFilter]) // eslint-disable-line
+  const shiftNames = useMemo(() => [...new Set(summary.map((r) => r.shift || '(no shift)'))].sort(), [summary])
   const erpOn = erpInfo?.erp === 'ok'
   const fPunches = useMemo(() => punches.filter(match), [punches, term]) // eslint-disable-line
 
@@ -83,16 +86,16 @@ export default function App() {
         <div>
           <h1>Biometric Checkins</h1>
           <p className="sub">
-            {devices.length} machines · direct LAN fetch · v3
-            {config?.auto_sync_minutes ? ` · auto sync har ${config.auto_sync_minutes} min` : ''}
+            {devices.length} machines · direct LAN fetch · v4
+            {config?.auto_sync_minutes ? ` · auto sync every ${config.auto_sync_minutes} min` : ''}
           </p>
         </div>
         <div className="controls">
-          <button className="ghost" onClick={() => setDay(shiftDay(day, -1))} aria-label="Pichla din">‹</button>
+          <button className="ghost" onClick={() => setDay(shiftDay(day, -1))} aria-label="Previous day">‹</button>
           <input type="date" value={day} max={today()} onChange={(e) => e.target.value && setDay(e.target.value)} />
-          <button className="ghost" onClick={() => setDay(shiftDay(day, 1))} disabled={day >= today()} aria-label="Agla din">›</button>
+          <button className="ghost" onClick={() => setDay(shiftDay(day, 1))} disabled={day >= today()} aria-label="Next day">›</button>
           <button className="primary" onClick={fetchFromMachines} disabled={!!busy}>
-            {busy === 'sync' ? 'Machines se le raha hai…' : 'Machines se fetch karo'}
+            {busy === 'sync' ? 'Fetching from machines…' : 'Fetch from machines'}
           </button>
         </div>
       </header>
@@ -101,8 +104,8 @@ export default function App() {
 
       {syncResult && (
         <div className={`banner ${syncResult.failed.length ? 'warn' : 'ok'}`}>
-          <strong>{syncResult.new_total}</strong> naye checkins aaye ({syncResult.start}).
-          {syncResult.failed.length > 0 && <> Fail: {syncResult.failed.join(', ')}. Machines tab mein detail dekhein.</>}
+          <strong>{syncResult.new_total}</strong> new checkins fetched ({syncResult.start}).
+          {syncResult.failed.length > 0 && <> Failed: {syncResult.failed.join(', ')}. See the Machines tab for details.</>}
           <button className="link" onClick={() => setSyncResult(null)}>×</button>
         </div>
       )}
@@ -110,30 +113,30 @@ export default function App() {
       <section className="stats">
         <Stat label="Employees" value={summary.length} />
         <Stat label="Total punches" value={punches.length} />
-        <Stat label="Sirf 1 punch" value={singlePunch} hint="IN ya OUT missing" tone={singlePunch ? 'warn' : ''} />
+        <Stat label="Single punch" value={singlePunch} hint="IN or OUT missing" tone={singlePunch ? 'warn' : ''} />
         <Stat label="Machines online" value={onlineCount === null ? '—' : `${onlineCount}/${status.length}`}
           tone={onlineCount !== null && onlineCount < status.length ? 'bad' : ''} />
       </section>
 
       <nav className="tabs">
-        {[['summary', 'Employee summary'], ['punches', 'Saare punches'], ['compare', 'ERP comparison'], ['machines', 'Machines']].map(([k, l]) => (
+        {[['summary', 'Employee summary'], ['punches', 'All punches'], ['compare', 'ERP comparison'], ['machines', 'Machines']].map(([k, l]) => (
           <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>{l}</button>
         ))}
         <div className="spacer" />
         {tab === 'compare' && (
-          <input className="search" placeholder="Employee ID ya naam…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="search" placeholder="Employee ID or name…" value={search} onChange={(e) => setSearch(e.target.value)} />
         )}
         {(tab === 'summary' || tab === 'punches') && (
           <>
-            <input className="search" placeholder="Employee ID ya naam…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className="search" placeholder="Employee ID or name…" value={search} onChange={(e) => setSearch(e.target.value)} />
             {tab === 'summary' && erpOn && (
               <select value={shiftFilter} onChange={(e) => setShiftFilter(e.target.value)}>
-                <option value="">Saari shifts</option>
+                <option value="">All shifts</option>
                 {shiftNames.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             )}
             <select value={device} onChange={(e) => setDevice(e.target.value)}>
-              <option value="">Sab machines</option>
+              <option value="">All machines</option>
               {devices.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}
             </select>
             <a className="btn ghost" href={`/api/export.csv?date=${day}&kind=${tab === 'summary' ? 'summary' : 'punches'}`}>CSV</a>
@@ -144,16 +147,16 @@ export default function App() {
       {tab === 'summary' && erpInfo && !erpOn && (
         <div className="banner warn">
           {erpInfo.erp === 'not_configured'
-            ? <>ERP link nahi hai, is liye shift nahi dikh rahi. <code>backend/erp.json</code> mein url, api_key, api_secret daal kar backend restart karein.</>
-            : <>ERP se shift nahi aayi: {erpInfo.error}</>}
+            ? <>ERP is not linked, so shifts are not shown. Add url, api_key and api_secret to <code>backend/erp.json</code> and restart the backend.</>
+            : <>Could not load shifts from ERP: {erpInfo.error}</>}
         </div>
       )}
 
       {tab === 'summary' && (
-        <Table empty={`${day} ka koi checkin local DB mein nahi. "Machines se fetch karo" dabayein.`}
+        <Table empty={`No checkins for ${day} in the local database. Click "Fetch from machines".`}
           head={erpOn
-            ? ['Employee ID', 'Naam', 'Shift', 'Pehla punch', 'Aakhri punch', 'Ghante', 'Machine punches', 'ERP checkins', 'Machines']
-            : ['Employee ID', 'Naam', 'Pehla punch', 'Aakhri punch', 'Ghante', 'Punches', 'Machines']}
+            ? ['Employee ID', 'Name', 'Shift', 'First punch', 'Last punch', 'Hours', 'Machine punches', 'ERP checkins', 'Machines']
+            : ['Employee ID', 'Name', 'First punch', 'Last punch', 'Hours', 'Punches', 'Machines']}
           rows={fSummary.map((s) => {
             const last = s.punches > 1 ? hhmm(s.last) : <span className="tag warn">missing</span>
             const hours = s.hours ? s.hours.toFixed(2) : '—'
@@ -164,7 +167,7 @@ export default function App() {
               <>{s.erp_name || s.name || '—'}{s.department && <div className="muted small">{s.department}</div>}</>,
               s.shift ? <span className="tag in">{s.shift}</span> : <span className="muted">—</span>,
               hhmm(s.first), last, hours, s.punches,
-              s.erp_count === undefined ? <span className="tag warn">ERP mein nahi</span>
+              s.erp_count === undefined ? <span className="tag warn">Not in ERP</span>
                 : <span className={s.missing_in_erp ? 'neg-text' : ''}>{s.erp_count}{s.missing_in_erp ? ` (−${s.missing_in_erp})` : ''}</span>,
               machines,
             ]
@@ -172,8 +175,8 @@ export default function App() {
       )}
 
       {tab === 'punches' && (
-        <Table empty="Koi punch nahi mila."
-          head={['Waqt', 'Employee ID', 'Naam', 'Machine', 'Log type', 'Punch', 'Status']}
+        <Table empty="No punches found."
+          head={['Time', 'Employee ID', 'Name', 'Machine', 'Log type', 'Punch', 'Status']}
           rows={fPunches.map((p) => [
             p.ts.slice(11), p.user_id, p.name || '—', p.device,
             p.log_type ? <span className={`tag ${p.log_type === 'OUT' ? 'out' : 'in'}`}>{p.log_type}</span> : '—',
@@ -186,8 +189,8 @@ export default function App() {
       {tab === 'machines' && (
         <div className="machines">
           <div className="row-actions">
-            <button onClick={checkMachines} disabled={!!busy}>{busy === 'status' ? 'Check ho raha hai…' : 'Connection check karo'}</button>
-            <span className="muted">Har machine se connect karke waqt aur record count dekhta hai.</span>
+            <button onClick={checkMachines} disabled={!!busy}>{busy === 'status' ? 'Checking…' : 'Check connections'}</button>
+            <span className="muted">Connects to each machine and reads its clock and record count.</span>
           </div>
           <div className="grid">
             {devices.map((d) => {
@@ -212,7 +215,7 @@ export default function App() {
                   {st && !st.online && <p className="err">{st.error}</p>}
                   {sr && (
                     <p className={sr.ok ? 'small' : 'err'}>
-                      Last fetch: {sr.ok ? `${sr.in_range} is din ke, ${sr.new} naye (${sr.seconds}s)` : sr.error}
+                      Last fetch: {sr.ok ? `${sr.in_range} for this day, ${sr.new} new (${sr.seconds}s)` : sr.error}
                     </p>
                   )}
                 </div>

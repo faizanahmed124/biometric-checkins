@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 
 const STATUS = {
   match: ['Match', 'ok'],
-  missing_in_erp: ['ERP mein missing', 'bad'],
-  extra_in_erp: ['Sirf ERP mein', 'warn'],
-  different: ['Dono mein farq', 'bad'],
-  no_employee: ['ERP mein employee nahi', 'warn'],
+  missing_in_erp: ['Missing in ERP', 'bad'],
+  extra_in_erp: ['Only in ERP', 'warn'],
+  different: ['Different', 'bad'],
+  no_employee: ['Employee not in ERP', 'warn'],
 }
-const SRC = { erp: 'ERP checkin', assignment: 'Shift Assignment', default: 'Default shift', time: 'Waqt se andaza' }
+const SRC = { erp: 'ERP checkin', assignment: 'Shift Assignment', default: 'Default shift', time: 'Guessed from time' }
 const hhmm = (t) => t.slice(11, 16)
 
 export default function Compare({ day, search }) {
@@ -35,7 +35,7 @@ export default function Compare({ day, search }) {
   const rows = useMemo(() => {
     if (!data?.employees) return []
     return data.employees.filter((r) =>
-      (!shift || (r.shift || '(koi shift nahi)') === shift) &&
+      (!shift || (r.shift || '(no shift)') === shift) &&
       (only === 'all' || (only === 'mismatch' ? r.status !== 'match' : r.status === only)) &&
       (!term || [r.employee, r.device_uid, r.name, r.department].some((v) => (v || '').toLowerCase().includes(term))))
   }, [data, shift, only, term])
@@ -43,8 +43,8 @@ export default function Compare({ day, search }) {
   if (data && !data.configured) {
     return (
       <div className="empty left">
-        <strong>ERP abhi link nahi hai.</strong>
-        <p><code>backend/erp.json</code> banayein (<code>erp.example.json</code> copy karke) aur ERP ki API key/secret daal kar backend restart karein. Tareeqa README mein hai.</p>
+        <strong>ERP is not linked yet.</strong>
+        <p>Create <code>backend/erp.json</code> (copy <code>erp.example.json</code>), add your ERP API key and secret, then restart the backend. Steps are in the README.</p>
       </div>
     )
   }
@@ -53,10 +53,10 @@ export default function Compare({ day, search }) {
   return (
     <div>
       <div className="row-actions">
-        <button onClick={load} disabled={loading}>{loading ? 'ERP se le raha hai…' : 'Dobara compare karo'}</button>
+        <button onClick={load} disabled={loading}>{loading ? 'Loading from ERP…' : 'Compare again'}</button>
         {erpStatus && (erpStatus.ok
           ? <span className="muted">ERP: {erpStatus.url} · user {erpStatus.user}</span>
-          : erpStatus.configured && <span className="err">ERP connect nahi: {erpStatus.error}</span>)}
+          : erpStatus.configured && <span className="err">ERP connection failed: {erpStatus.error}</span>)}
       </div>
 
       {error && <div className="alert">⚠ {error}</div>}
@@ -66,8 +66,8 @@ export default function Compare({ day, search }) {
           <section className="stats">
             <div className="stat"><span className="label">Machine punches</span><span className="value">{t.machine}</span></div>
             <div className="stat"><span className="label">ERP checkins</span><span className="value">{t.erp}</span></div>
-            <div className={`stat ${t.missing_in_erp ? 'bad' : ''}`}><span className="label">ERP mein missing</span><span className="value">{t.missing_in_erp}</span><span className="hint">machine par hain, ERP mein nahi</span></div>
-            <div className={`stat ${t.extra_in_erp ? 'warn' : ''}`}><span className="label">Sirf ERP mein</span><span className="value">{t.extra_in_erp}</span><span className="hint">ERP mein hain, machine se nahi aaye</span></div>
+            <div className={`stat ${t.missing_in_erp ? 'bad' : ''}`}><span className="label">Missing in ERP</span><span className="value">{t.missing_in_erp}</span><span className="hint">on machines, not in ERP</span></div>
+            <div className={`stat ${t.extra_in_erp ? 'warn' : ''}`}><span className="label">Only in ERP</span><span className="value">{t.extra_in_erp}</span><span className="hint">in ERP, not fetched from machines</span></div>
           </section>
 
           <div className="two-col">
@@ -75,7 +75,7 @@ export default function Compare({ day, search }) {
               <h3>Shift-wise</h3>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Shift</th><th>Employees</th><th>Machine</th><th>ERP</th><th>Missing</th><th>Farq wale</th></tr></thead>
+                  <thead><tr><th>Shift</th><th>Employees</th><th>Machine</th><th>ERP</th><th>Missing</th><th>Mismatched</th></tr></thead>
                   <tbody>
                     {data.by_shift.map((s) => (
                       <tr key={s.shift} className={shift === s.shift ? 'selected' : ''} onClick={() => setShift(shift === s.shift ? '' : s.shift)} style={{ cursor: 'pointer' }}>
@@ -86,13 +86,13 @@ export default function Compare({ day, search }) {
                   </tbody>
                 </table>
               </div>
-              <p className="muted small">Shift par click karke neeche ki list filter karein.</p>
+              <p className="muted small">Click a shift to filter the employee list below.</p>
             </div>
             <div>
               <h3>Machine-wise</h3>
               <div className="table-wrap short">
                 <table>
-                  <thead><tr><th>Machine</th><th>Machine par</th><th>ERP mein</th><th>Farq</th></tr></thead>
+                  <thead><tr><th>Machine</th><th>On machine</th><th>In ERP</th><th>Difference</th></tr></thead>
                   <tbody>
                     {data.by_device.map((d) => {
                       const diff = d.machine - d.erp
@@ -113,22 +113,22 @@ export default function Compare({ day, search }) {
             <h3 style={{ margin: 0 }}>Employees</h3>
             <div className="spacer" />
             <select value={shift} onChange={(e) => setShift(e.target.value)}>
-              <option value="">Saari shifts</option>
+              <option value="">All shifts</option>
               {data.by_shift.map((s) => <option key={s.shift} value={s.shift}>{s.shift}</option>)}
             </select>
             <select value={only} onChange={(e) => setOnly(e.target.value)}>
-              <option value="mismatch">Sirf farq wale</option>
-              <option value="all">Sab</option>
+              <option value="mismatch">Mismatches only</option>
+              <option value="all">All</option>
               {Object.entries(STATUS).map(([k, [l]]) => <option key={k} value={k}>{l}</option>)}
             </select>
           </div>
 
           {rows.length === 0
-            ? <div className="empty">{only === 'mismatch' ? 'Koi farq nahi — machine aur ERP barabar hain.' : 'Koi record nahi.'}</div>
+            ? <div className="empty">{only === 'mismatch' ? 'No differences — machine and ERP match.' : 'No records.'}</div>
             : (
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Employee</th><th>Naam</th><th>Shift</th><th>Machine</th><th>ERP</th><th>Status</th><th>ERP mein missing</th><th>Sirf ERP mein</th><th>Attendance</th></tr></thead>
+                  <thead><tr><th>Employee</th><th>Name</th><th>Shift</th><th>Machine</th><th>ERP</th><th>Status</th><th>Missing in ERP</th><th>Only in ERP</th><th>Attendance</th></tr></thead>
                   <tbody>
                     {rows.map((r) => {
                       const [label, tone] = STATUS[r.status]

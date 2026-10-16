@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Dev mode mein /api calls backend (port 8800) par jayengi
+// In dev mode, /api calls are proxied to the backend on port 8800
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173, proxy: { '/api': 'http://127.0.0.1:8800' } },
