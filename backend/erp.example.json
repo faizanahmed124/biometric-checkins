@@ -1,0 +1,7 @@
+{
+  "url": "http://10.1.1.98:8000",
+  "site": "atshr.com",
+  "api_key": "PASTE_API_KEY",
+  "api_secret": "PASTE_API_SECRET",
+  "verify_ssl": true
+}
