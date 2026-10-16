@@ -1,7 +1,7 @@
 """
-ERPNext / Frappe HRMS se read-only link.
-Employee Checkin, Employee, Shift Assignment aur Shift Type REST API se padhta hai,
-aur machine wale local checkins ke saath compare karta hai.
+Read-only link to ERPNext / Frappe HRMS.
+Reads Employee Checkin, Employee, Shift Assignment and Shift Type over the REST API,
+and compares them with the locally stored machine checkins.
 """
 import json
 import os
@@ -33,7 +33,7 @@ class ERP:
             "Authorization": f"token {conf['api_key']}:{conf['api_secret']}",
             "Accept": "application/json",
         }
-        if conf.get("site"):  # IP se access ho to Frappe ko site batani parti hai
+        if conf.get("site"):  # when ERP is reached by IP, Frappe needs the site name
             headers["Host"] = conf["site"]
             headers["X-Frappe-Site-Name"] = conf["site"]
         self.client = httpx.Client(base_url=conf["url"].rstrip("/"), headers=headers,
@@ -107,7 +107,7 @@ def _norm(ts: str) -> str:
 
 
 def guess_shift(ts: str, day: date, shift_types: list) -> str | None:
-    """Punch kis shift ke window mein aata hai (sirf jab ERP/assignment se shift na mile)."""
+    """Which shift window a punch falls in (only used when ERP/assignment has no shift)."""
     t = datetime.fromisoformat(_norm(ts))
     base = datetime.combine(day, datetime.min.time())
     for st in shift_types:
@@ -136,7 +136,7 @@ def compare(day: date, machine_rows: list, devices: list) -> dict:
     device_uid_to_emp = {}
     for e in employees:
         device_uid_to_emp[str(e["name"])] = e["name"]
-    for e in employees:  # attendance_device_id ko tarjeeh
+    for e in employees:  # attendance_device_id takes priority
         if e.get("attendance_device_id"):
             device_uid_to_emp[str(e["attendance_device_id"])] = e["name"]
     assigned = {a["employee"]: a["shift_type"] for a in assignments}
@@ -212,7 +212,7 @@ def compare(day: date, machine_rows: list, devices: list) -> dict:
     # shift-wise
     shifts = defaultdict(lambda: {"employees": 0, "machine": 0, "erp": 0, "missing_in_erp": 0, "extra_in_erp": 0, "mismatch": 0})
     for r in rows:
-        s = shifts[r["shift"] or "(koi shift nahi)"]
+        s = shifts[r["shift"] or "(no shift)"]
         s["employees"] += 1
         s["machine"] += r["machine_count"]
         s["erp"] += r["erp_count"]
@@ -221,9 +221,9 @@ def compare(day: date, machine_rows: list, devices: list) -> dict:
         s["mismatch"] += r["status"] != "match"
     by_shift = [{"shift": k, **v} for k, v in sorted(shifts.items())]
 
-    # machine-wise (ERP mein device_id = Biometric Device ka naam)
+    # machine-wise (ERP device_id = Biometric Device name)
     m_dev = Counter(r["device"] for r in machine_rows)
-    e_dev = Counter((r.get("device_id") or "(device_id khali)") for r in erp_rows)
+    e_dev = Counter((r.get("device_id") or "(no device_id)") for r in erp_rows)
     names = [d["name"] for d in devices]
     by_device = [{"device": n, "machine": m_dev.get(n, 0), "erp": e_dev.get(n, 0)} for n in names]
     by_device += [{"device": n, "machine": m_dev.get(n, 0), "erp": c} for n, c in e_dev.items() if n not in names]
@@ -247,7 +247,7 @@ def compare(day: date, machine_rows: list, devices: list) -> dict:
 
 
 def enrich_summary(day: date, summary_rows: list, machine_rows: list, devices: list) -> dict:
-    """Employee summary rows mein ERP ki shift, naam, department aur ERP count jodta hai."""
+    """Adds ERP shift, name, department and ERP count to employee summary rows."""
     if not load_conf():
         return {"erp": "not_configured"}
     try:

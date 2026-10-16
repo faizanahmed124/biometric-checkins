@@ -1,7 +1,7 @@
 """
 Biometric Checkins - local backend
-Machines (ZKTeco) se direct LAN par logs uthata hai, SQLite mein save karta hai,
-aur React frontend ko HTTP API deta hai. ERP se bilkul alag chalta hai.
+Pulls logs directly from ZKTeco machines over the LAN, stores them in SQLite,
+and serves an HTTP API for the React frontend. Runs independently of ERP.
 """
 import csv
 import io
@@ -25,7 +25,7 @@ import erp
 BASE = Path(__file__).resolve().parent
 DEVICES_FILE = Path(os.getenv("DEVICES_FILE", BASE / "devices.json"))
 DB_FILE = Path(os.getenv("DB_FILE", BASE / "checkins.db"))
-AUTO_SYNC_MINUTES = int(os.getenv("AUTO_SYNC_MINUTES", "30"))  # 0 = auto sync band
+AUTO_SYNC_MINUTES = int(os.getenv("AUTO_SYNC_MINUTES", "30"))  # 0 = auto sync off
 DEVICE_TIMEOUT = int(os.getenv("DEVICE_TIMEOUT", "10"))
 MAX_RANGE_DAYS = 31
 FRONTEND_DIST = BASE.parent / "frontend" / "dist"
@@ -85,14 +85,14 @@ def parse_day(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError:
-        raise HTTPException(400, f"Galat date: {value} (YYYY-MM-DD chahiye)")
+        raise HTTPException(400, f"Invalid date: {value} (expected YYYY-MM-DD)")
 
 
 def check_range(start: date, end: date):
     if end < start:
-        raise HTTPException(400, "End date start se pehle nahi ho sakti")
+        raise HTTPException(400, "End date cannot be before start date")
     if (end - start).days >= MAX_RANGE_DAYS:
-        raise HTTPException(400, f"Ek dafa mein zyada se zyada {MAX_RANGE_DAYS} din")
+        raise HTTPException(400, f"Maximum range is {MAX_RANGE_DAYS} days")
 
 
 def connect(dev: dict):
@@ -105,7 +105,7 @@ def connect(dev: dict):
         ommit_ping=bool(dev.get("ommit_ping", True)),
     )
     last_err = None
-    for _ in range(2):  # ek retry, machine kabhi kabhi ERP ke cron se busy hoti hai
+    for _ in range(2):  # one retry: the machine is sometimes busy with the ERP cron
         try:
             return zk.connect()
         except Exception as e:  # noqa: BLE001
@@ -146,7 +146,7 @@ def pull_device(dev: dict, start: date, end: date) -> dict:
     t0 = time.time()
     lock = device_lock(name)
     if not lock.acquire(timeout=90):
-        res["error"] = "Machine busy hai (pehla sync abhi chal raha hai)"
+        res["error"] = "Machine busy (another sync is still running)"
         return res
     conn = None
     try:
@@ -154,7 +154,7 @@ def pull_device(dev: dict, start: date, end: date) -> dict:
         users = []
         try:
             users = [(str(u.user_id), (u.name or "").strip()) for u in conn.get_users() or []]
-        except Exception:  # noqa: BLE001  - naam na milein to bhi logs chahiye
+        except Exception:  # noqa: BLE001  - still fetch logs if names fail
             pass
         records = conn.get_attendance() or []
         res["on_device"] = len(records)
@@ -200,7 +200,7 @@ def device_status(dev: dict) -> dict:
            "device_time": None, "firmware": None, "records": None}
     lock = device_lock(dev["name"])
     if not lock.acquire(timeout=5):
-        res["error"] = "Sync chal raha hai"
+        res["error"] = "Sync in progress"
         return res
     conn = None
     try:
@@ -230,7 +230,7 @@ def auto_sync_loop():
         time.sleep(AUTO_SYNC_MINUTES * 60)
         try:
             today = date.today()
-            run_sync(today - timedelta(days=1), today)  # kal + aaj, taake raat ke punch na chhootein
+            run_sync(today - timedelta(days=1), today)  # yesterday + today, so late-night punches are not missed
         except Exception as e:  # noqa: BLE001
             print("Auto sync error:", e)
 
@@ -347,7 +347,7 @@ def export_csv(date_: str = Query(..., alias="date"), kind: str = "punches"):
 
 @app.get("/api/summary_erp")
 def summary_erp(date_: str = Query(..., alias="date"), device: str | None = None, employee: str | None = None):
-    """Summary + ERP se shift/naam (ERP link na ho to bhi summary aati hai)."""
+    """Summary plus ERP shift/name (summary still works without ERP)."""
     day = parse_day(date_)
     rows = build_summary(query_checkins(day, device, employee))
     info = erp.enrich_summary(day, rows, query_checkins(day, None, None), load_devices())
@@ -365,9 +365,9 @@ def compare(date_: str = Query(..., alias="date")):
     try:
         return erp.compare(day, query_checkins(day, None, None), load_devices())
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"ERP se data nahi aaya: {e}")
+        raise HTTPException(502, f"Could not load data from ERP: {e}")
 
 
-# React build ko isi server se serve karo (production)
+# Serve the React build from this server (production)
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
